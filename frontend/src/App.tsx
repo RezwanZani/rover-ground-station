@@ -22,7 +22,7 @@ type Telemetry = {
   gps: { lat: number; lon: number; heading: number };
   velocity: { speed_mps: number; direction_deg: number };
   imu: { pitch: number; roll: number; yaw: number };
-  joy: { axis_x: number; axis_y: number; deadband?: number };
+  joy: { axis_x: number; axis_y: number; deadband?: number; connected?: boolean; name?: string };
   motors: Motor[];
   camera: { primary_url?: string; secondary_url?: string };
 };
@@ -228,8 +228,8 @@ export default function App() {
     <main className="app-shell">
       <header className="topbar">
         <div className="brand-block">
-          <div className="brand-mark"><span>R</span></div>
-          <div><h1>ROVER CONTROL</h1><p>GROUND STATION <b>/</b> ALPHA-01</p></div>
+          <img src="/logo.png" alt="ROVER71" className="logo" />
+          <div><h1>AAUB ROVER71</h1><p>GROUND STATION</p></div>
         </div>
         <div className="status-block">
           <span className="status-label">WEBSOCKET</span>
@@ -311,7 +311,7 @@ export default function App() {
             </section>
 
             <aside className="right-column">
-              <Panel title="JOYSTICK INPUT" icon="crosshair" meta="10–20 HZ" className="joystick-panel">
+              <Panel title="JOYSTICK INPUT" icon="crosshair" meta={<><span className={telemetry.joy.connected ? "green" : "red"}>{telemetry.joy.connected ? "CONNECTED" : "DISCONNECTED"}</span><span style={{ marginLeft: "8px", color: "#586267" }}>{telemetry.joy.connected ? (telemetry.joy.name || "UNKNOWN DEVICE") : "WASD FALLBACK"}</span></>} className="joystick-panel">
                 <div className="joystick-body">
                   <div className="joystick-axis y-axis"><span>+Y</span><span>−Y</span></div>
                   <div className="joystick-pad">

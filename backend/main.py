@@ -26,7 +26,7 @@ from csv_logger import log_event
 SERIAL_PORT = "COM20"   # Change to your XBee COM port (or virtual COM port for testing)
 BAUD_RATE = 115200      # Must match XBee API mode baud rate
 LOOP_HZ = 20            # 20 Hz transmission rate (50ms period)
-DEADZONE = 0.05         # 5% analog stick deadzone
+DEADZONE = 0.20         # 20% analog stick deadzone to prevent drift spam
 WS_PORT = 8765          # Local WebSocket port for React UI
 
 # ==========================================
@@ -39,7 +39,9 @@ sys_state = {
     "tx_active": False,     # Serial write status
     "rx_ping_ms": 0,        # Heartbeat latency
     "cmd_flag": 0,          # 0 = Normal Teleop, >0 = Hardware Test Override
-    "test_timeout": 0       # Timestamp to automatically release the hardware test
+    "test_timeout": 0,      # Timestamp to automatically release the hardware test
+    "joy_connected": False, # Gamepad hardware status
+    "joy_name": ""          # Gamepad hardware name
 }
 
 # ==========================================
@@ -69,15 +71,10 @@ async def hardware_loop():
     pygame.init()
     pygame.joystick.init()
     joystick = None
+    # Note: Running fully headlessly. WASD fallback may only work if terminal has focus, 
+    # but this prevents the OS from freezing joystick event polling due to a hidden unpumped window.
     
-    if pygame.joystick.get_count() > 0:
-        joystick = pygame.joystick.Joystick(0)
-        joystick.init()
-        log_event(f"[GAMEPAD] Detected: {joystick.get_name()}")
-    else:
-        log_event("[GAMEPAD] No controller found. Using WASD keyboard fallback for testing.")
-        # Setup a small invisible window to capture keyboard events if no joystick
-        pygame.display.set_mode((100, 100)) 
+    log_event("[GAMEPAD] Waiting for controller... (Headless mode)")
 
     # 3. Main Transmission Loop (20 Hz)
     idle_sent = False
@@ -85,15 +82,40 @@ async def hardware_loop():
         loop_start = time.time()
         
         # --- A. Read Inputs ---
-        pygame.event.pump()
+        for event in pygame.event.get():
+            if event.type == pygame.JOYDEVICEADDED:
+                # Connect to the first available device (avoids overwriting real gamepads with ghosts)
+                if joystick is None:
+                    joystick = pygame.joystick.Joystick(event.device_index)
+                    joystick.init()
+                    sys_state["joy_connected"] = True
+                    sys_state["joy_name"] = joystick.get_name()
+                    log_event(f"[GAMEPAD] Hot-plug connected: {joystick.get_name()} (ID: {joystick.get_instance_id()})")
+            elif event.type == pygame.JOYDEVICEREMOVED:
+                # Only disconnect if the REMOVED device matches our ACTIVE joystick
+                if joystick and getattr(event, 'instance_id', -1) == joystick.get_instance_id():
+                    log_event(f"[GAMEPAD] Disconnected: {joystick.get_name()}")
+                    joystick.quit()
+                    joystick = None
+                    sys_state["joy_connected"] = False
+                    sys_state["joy_name"] = ""
+                    log_event("[GAMEPAD] Falling back to WASD.")
+
         linear_x = 0.0
         angular_z = 0.0
 
         if joystick:
-            # Axis mapping varies by controller (typically Axis 1 is Y, Axis 0 is X)
-            # Invert Y axis so pushing forward is positive
-            linear_x = apply_deadzone(-joystick.get_axis(1)) 
-            angular_z = apply_deadzone(joystick.get_axis(0))
+            try:
+                # Axis mapping varies by controller (typically Axis 1 is Y, Axis 0 is X)
+                # Invert Y axis so pushing forward is positive
+                linear_x = apply_deadzone(-joystick.get_axis(1)) 
+                angular_z = apply_deadzone(joystick.get_axis(0))
+            except Exception as e:
+                log_event(f"[GAMEPAD ERROR] Hardware read failed, forcing disconnect: {e}")
+                joystick.quit()
+                joystick = None
+                sys_state["joy_connected"] = False
+                sys_state["joy_name"] = ""
         else:
             # Keyboard Fallback (WASD)
             keys = pygame.key.get_pressed()
@@ -174,7 +196,9 @@ async def handle_ws_client(websocket):
                     "timestamp": time.time(),
                     "joy": {
                         "axis_x": sys_state["joy_x"],
-                        "axis_y": sys_state["joy_y"]
+                        "axis_y": sys_state["joy_y"],
+                        "connected": sys_state["joy_connected"],
+                        "name": sys_state["joy_name"]
                     },
                     "radio": {
                         "tx_active": sys_state["tx_active"],
@@ -186,13 +210,14 @@ async def handle_ws_client(websocket):
                     }
                 }
                 
+                # Always broadcast to keep UI heartbeat and connection status fresh
+                telemetry_json = json.dumps(telemetry)
+                # Avoid spamming the local python log with identical idle frames
                 is_idle = (sys_state["joy_x"] == 0.0 and sys_state["joy_y"] == 0.0 and sys_state["cmd_flag"] == 0)
-                
                 if not is_idle or not ws_idle_sent:
-                    telemetry_json = json.dumps(telemetry)
                     log_event(f"[MAIN EVENT] Sending Telemetry via WS -> {telemetry_json}")
-                    await websocket.send(telemetry_json)
                     ws_idle_sent = is_idle
+                await websocket.send(telemetry_json)
                 
                 await asyncio.sleep(0.05) # Send at 20 Hz
             except websockets.exceptions.ConnectionClosed as e:

@@ -286,3 +286,8 @@ body { background: #eaf2f5; }
   font: 800 7px/1 ui-monospace, monospace;
   letter-spacing: .08em;
 }
+
+.logo {
+  width: 40px;
+  height: auto;
+}
