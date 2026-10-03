@@ -1,137 +1,358 @@
-import React from 'react';
-import { useTelemetry } from './hooks/useTelemetry';
-import { JoystickPad } from './components/JoystickPad';
-import { StatusLights } from './components/StatusLights';
-import { HardwareTests } from './components/HardwareTests';
-import { Camera, Map, Compass, Cpu } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from "react";
+import L from "leaflet";
+import useWebSocketExport from "react-use-websocket";
+import "leaflet/dist/leaflet.css";
 
-function App() {
-  const { telemetry, connected, sendHardwareTest } = useTelemetry();
+// Vite 8 currently double-wraps this CommonJS package's default export in
+// development, while production receives the function directly.
+const useWebSocket = typeof useWebSocketExport === "function"
+  ? useWebSocketExport
+  : (useWebSocketExport as unknown as { default: typeof useWebSocketExport }).default;
 
-  // Telemetry fallback defaults
-  const joyX = telemetry?.joy?.axis_x ?? 0.0;
-  const joyY = telemetry?.joy?.axis_y ?? 0.0;
-  const txActive = telemetry?.radio?.tx_active ?? false;
-  const rxPingMs = telemetry?.radio?.rx_ping_ms ?? 0;
-  const activeFlag = telemetry?.rover_state?.active_flag ?? 0;
-  const batteryV = telemetry?.rover_state?.battery_v ?? 24.5;
-  const mode = activeFlag > 0 ? 'HARDWARE TEST OVERRIDE' : 'TELEOP (JOYSTICK)';
-  
-  // Dummy data for left panel
-  const motors = telemetry?.rover_state?.motors ?? [
-    { current: 1.2, temp: 35 }, { current: 1.1, temp: 34 }, { current: 1.3, temp: 36 },
-    { current: 1.2, temp: 35 }, { current: 1.4, temp: 37 }, { current: 1.1, temp: 34 }
-  ];
-  const pitch = telemetry?.rover_state?.pitch ?? 2.4;
-  const roll = telemetry?.rover_state?.roll ?? -1.2;
+type Motor = {
+  name: string;
+  current_a: number;
+  temp_c: number;
+};
+
+type Telemetry = {
+  radio: { tx_active: boolean; rx_ping_ms: number };
+  battery: { voltage: number };
+  rover_state: { active_flag: string };
+  gps: { lat: number; lon: number; heading: number };
+  velocity: { speed_mps: number; direction_deg: number };
+  imu: { pitch: number; roll: number; yaw: number };
+  joy: { axis_x: number; axis_y: number; deadband?: number };
+  motors: Motor[];
+  camera: { primary_url?: string; secondary_url?: string };
+};
+
+const defaultMotors: Motor[] = [
+  { name: "DRIVE FL", current_a: 8.4, temp_c: 42 },
+  { name: "DRIVE FR", current_a: 8.1, temp_c: 41 },
+  { name: "DRIVE ML", current_a: 7.8, temp_c: 39 },
+  { name: "DRIVE MR", current_a: 8.2, temp_c: 43 },
+  { name: "DRIVE RL", current_a: 7.9, temp_c: 40 },
+  { name: "DRIVE RR", current_a: 8.0, temp_c: 41 },
+];
+
+const defaults: Telemetry = {
+  radio: { tx_active: false, rx_ping_ms: 0 },
+  battery: { voltage: 0 },
+  rover_state: { active_flag: "STANDBY" },
+  gps: { lat: 37.4275, lon: -122.1697, heading: 284 },
+  velocity: { speed_mps: 0, direction_deg: 284 },
+  imu: { pitch: 0, roll: 0, yaw: 284 },
+  joy: { axis_x: 0, axis_y: 0, deadband: 0.08 },
+  motors: defaultMotors,
+  camera: {},
+};
+
+function Icon({ name, className = "h-4 w-4" }: { name: string; className?: string }) {
+  const paths: Record<string, React.ReactNode> = {
+    signal: <><path d="M4 18.5a2 2 0 1 0 0 .01" /><path d="M2.2 13.1a8 8 0 0 1 11.3 0M-1.3 9.6a13 13 0 0 1 18.4 0" /></>,
+    battery: <><rect x="1.5" y="5" width="17" height="12" rx="2" /><path d="M21 9v4M5 9h7v4H5z" /></>,
+    camera: <><rect x="2" y="5" width="16" height="13" rx="2" /><path d="m18 9 4-2v9l-4-2M7 5l1.3-2h3.4L13 5" /></>,
+    compass: <><circle cx="12" cy="12" r="9" /><path d="m15 8-2 5-5 2 2-5z" /></>,
+    crosshair: <><circle cx="12" cy="12" r="8" /><path d="M12 2v4m0 12v4M2 12h4m12 0h4" /></>,
+    swap: <><path d="M7 7h12l-3-3m3 3-3 3M17 17H5l3 3m-3-3 3-3" /></>,
+    alert: <><path d="M12 3 2.5 20h19z" /><path d="M12 9v5m0 3v.1" /></>,
+  };
+  return <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
+}
+
+function Panel({
+  title,
+  icon,
+  meta,
+  children,
+  className = "",
+}: {
+  title: string;
+  icon?: string;
+  meta?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`panel flex min-h-0 flex-col ${className}`}>
+      <header className="panel-header">
+        <div className="flex items-center gap-2">
+          {icon && <Icon name={icon} className="h-3.5 w-3.5 text-[#99a2a7]" />}
+          <h2>{title}</h2>
+        </div>
+        {meta && <div className="panel-meta">{meta}</div>}
+      </header>
+      {children}
+    </section>
+  );
+}
+
+function MapWidget({ gps }: { gps: Telemetry["gps"] }) {
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const markerRef = useRef<L.Marker | null>(null);
+
+  useEffect(() => {
+    if (!nodeRef.current || mapRef.current) return;
+    const map = L.map(nodeRef.current, { zoomControl: false, attributionControl: false }).setView([gps.lat, gps.lon], 16);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      className: "dark-map-tiles",
+    }).addTo(map);
+    L.control.zoom({ position: "bottomright" }).addTo(map);
+    mapRef.current = map;
+    return () => {
+      map.remove();
+      mapRef.current = null;
+      markerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const icon = L.divIcon({
+      className: "rover-marker",
+      html: `<div style="transform:rotate(${gps.heading}deg)"><span></span></div>`,
+      iconSize: [34, 34],
+      iconAnchor: [17, 17],
+    });
+    if (!markerRef.current) markerRef.current = L.marker([gps.lat, gps.lon], { icon }).addTo(mapRef.current);
+    markerRef.current.setLatLng([gps.lat, gps.lon]).setIcon(icon);
+    mapRef.current.panTo([gps.lat, gps.lon], { animate: true, duration: 0.5 });
+  }, [gps.lat, gps.lon, gps.heading]);
 
   return (
-    <div className="min-h-screen bg-black text-slate-100 font-sans flex flex-col h-screen overflow-hidden">
-      {/* 1. The Critical Status Bar */}
-      <StatusLights 
-        txActive={txActive} 
-        rxPingMs={rxPingMs} 
-        batteryV={batteryV}
-        mode={mode}
-        wsConnected={connected}
-      />
-
-      <div className="flex flex-1 p-2 gap-2 overflow-hidden">
-        {/* 3. Left Panel: Telemetry Widgets */}
-        <aside className="w-64 lg:w-80 flex flex-col gap-2 shrink-0">
-          {/* GPS Map Widget */}
-          <div className="bg-[#111111] border border-zinc-800 rounded-lg flex-1 flex flex-col overflow-hidden">
-            <div className="p-2 border-b border-zinc-800 bg-zinc-900/50 flex items-center gap-2">
-              <Map className="w-4 h-4 text-zinc-400" />
-              <span className="text-xs font-bold text-zinc-300 uppercase tracking-widest">GPS Map</span>
-            </div>
-            <div className="flex-1 bg-zinc-900/30 flex items-center justify-center relative border-t border-black">
-               <div className="absolute inset-0 opacity-10 bg-[radial-gradient(circle,_#ffffff_1px,_transparent_1px)]" style={{ backgroundSize: '20px 20px' }}></div>
-               <div className="w-3 h-3 bg-blue-500 rounded-full shadow-[0_0_10px_rgba(59,130,246,0.8)] border border-white absolute top-1/2 left-1/2" />
-               <span className="absolute bottom-2 left-2 text-[10px] font-mono text-zinc-500">LAT: 38.4063 LNG: -110.7919</span>
-            </div>
-          </div>
-
-          {/* Orientation HUD */}
-          <div className="bg-[#111111] border border-zinc-800 rounded-lg h-48 flex flex-col shrink-0">
-            <div className="p-2 border-b border-zinc-800 bg-zinc-900/50 flex items-center gap-2">
-              <Compass className="w-4 h-4 text-zinc-400" />
-              <span className="text-xs font-bold text-zinc-300 uppercase tracking-widest">IMU Horizon</span>
-            </div>
-            <div className="flex-1 flex flex-col items-center justify-center gap-2">
-               <div className="w-32 h-1 bg-zinc-700 relative flex items-center justify-center rounded">
-                 <div className="w-16 h-1 bg-green-500 transform rounded shadow-[0_0_10px_rgba(34,197,94,0.5)]" style={{ rotate: `${roll}deg` }} />
-               </div>
-               <div className="flex gap-6 font-mono text-sm mt-4">
-                 <div className="flex flex-col items-center">
-                   <span className="text-[10px] text-zinc-500">PITCH</span>
-                   <span className="text-blue-400">{pitch.toFixed(1)}°</span>
-                 </div>
-                 <div className="flex flex-col items-center">
-                   <span className="text-[10px] text-zinc-500">ROLL</span>
-                   <span className="text-blue-400">{roll.toFixed(1)}°</span>
-                 </div>
-               </div>
-            </div>
-          </div>
-
-          {/* Motor Diagnostics */}
-          <div className="bg-[#111111] border border-zinc-800 rounded-lg h-56 flex flex-col shrink-0">
-            <div className="p-2 border-b border-zinc-800 bg-zinc-900/50 flex items-center gap-2">
-              <Cpu className="w-4 h-4 text-zinc-400" />
-              <span className="text-xs font-bold text-zinc-300 uppercase tracking-widest">Motor Diag</span>
-            </div>
-            <div className="flex-1 p-2 grid grid-cols-2 gap-2 overflow-y-auto">
-              {motors.map((m, i) => (
-                <div key={i} className="bg-zinc-900 border border-zinc-800 rounded p-2 flex flex-col justify-center">
-                  <span className="text-[10px] text-zinc-500 font-bold mb-1">DRIVE M{i+1}</span>
-                  <div className="flex justify-between font-mono text-xs items-center">
-                    <span className="text-yellow-500">{m.current.toFixed(1)}A</span>
-                    <span className={m.temp > 40 ? 'text-red-500 animate-pulse' : 'text-blue-400'}>{m.temp}°C</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
-
-        {/* 2. Main Center Views */}
-        <main className="flex-1 bg-[#111111] border border-zinc-800 rounded-lg relative flex flex-col overflow-hidden">
-          <div className="p-2 border-b border-zinc-800 bg-zinc-900/50 flex items-center gap-2 absolute top-0 w-full z-10">
-            <Camera className="w-4 h-4 text-zinc-400" />
-            <span className="text-xs font-bold text-zinc-300 uppercase tracking-widest">Primary Feed [FWD]</span>
-            <div className="ml-auto w-2 h-2 bg-red-500 rounded-full animate-pulse mr-2" />
-          </div>
-          
-          {/* Primary Video Feed Placeholder */}
-          <div className="flex-1 bg-zinc-900 flex items-center justify-center relative overflow-hidden">
-             <div className="absolute inset-0 opacity-[0.03] bg-[radial-gradient(circle,_#ffffff_2px,_transparent_2px)]" style={{ backgroundSize: '30px 30px' }}></div>
-             <span className="text-zinc-700 font-mono text-2xl font-black tracking-widest z-10">NO SIGNAL</span>
-          </div>
-
-          {/* Secondary Camera PiP */}
-          <div className="absolute bottom-4 right-4 w-64 h-48 bg-black border-2 border-zinc-700 shadow-[0_0_30px_rgba(0,0,0,0.8)] flex items-center justify-center rounded overflow-hidden">
-            <div className="absolute top-1 left-1 bg-black/70 px-1 py-0.5 text-[10px] text-zinc-400 font-mono z-10 border border-zinc-800">ARM CAM</div>
-            <div className="absolute inset-0 opacity-[0.05] bg-[radial-gradient(circle,_#ffffff_1px,_transparent_1px)]" style={{ backgroundSize: '10px 10px' }}></div>
-            <span className="text-zinc-700 font-mono text-sm font-bold tracking-widest z-10">NO SIGNAL</span>
-          </div>
-        </main>
-
-        {/* 4. Right Panel: Control & Overrides */}
-        <aside className="w-64 lg:w-80 flex flex-col gap-2 shrink-0">
-          <div className="flex-1 min-h-0">
-            <JoystickPad x={joyX} y={joyY} />
-          </div>
-          <div className="flex-1 min-h-0">
-            <HardwareTests 
-              onTriggerTest={sendHardwareTest} 
-              activeFlag={activeFlag} 
-            />
-          </div>
-        </aside>
+    <div className="relative min-h-0 flex-1 overflow-hidden">
+      <div ref={nodeRef} className="absolute inset-0" />
+      <div className="map-readout">
+        <span>{gps.lat.toFixed(5)}° N</span>
+        <span>{Math.abs(gps.lon).toFixed(5)}° W</span>
       </div>
+      <div className="heading-chip"><span>HDG</span> {Math.round(gps.heading).toString().padStart(3, "0")}°</div>
     </div>
   );
 }
 
-export default App;
+function Horizon({ imu }: { imu: Telemetry["imu"] }) {
+  const hazardous = Math.abs(imu.roll) >= 25 || Math.abs(imu.pitch) >= 25;
+  return (
+    <div className={`horizon-wrap ${hazardous ? "is-hazard" : ""}`}>
+      <div className="horizon" style={{ transform: `rotate(${-imu.roll}deg) translateY(${imu.pitch * 1.3}px)` }}>
+        <div className="sky" />
+        <div className="ground" />
+        <div className="pitch-lines">
+          {[20, 10, 0, -10, -20].map((degree) => <span key={degree} style={{ top: `${50 - degree * 1.5}%` }}>{degree !== 0 && Math.abs(degree)}</span>)}
+        </div>
+      </div>
+      <div className="aircraft-mark"><i /><b /><i /></div>
+      <div className="horizon-values">
+        <div><span>PITCH</span><strong>{imu.pitch.toFixed(1)}°</strong></div>
+        <div><span>ROLL</span><strong>{imu.roll.toFixed(1)}°</strong></div>
+        <div><span>YAW</span><strong>{Math.round(imu.yaw)}°</strong></div>
+      </div>
+      {hazardous && <div className="hazard-label"><Icon name="alert" /> ROLLOVER RISK</div>}
+    </div>
+  );
+}
+
+function CameraView({ url, label, secondary = false }: { url?: string; label: string; secondary?: boolean }) {
+  return (
+    <div className={`camera-view ${secondary ? "secondary" : ""}`}>
+      {url ? (
+        <img src={url} alt={`${label} live stream`} />
+      ) : (
+        <div className="camera-fallback">
+          <div className="reticle"><span /><span /><span /><span /></div>
+          <div className="terrain-line" />
+          <Icon name="camera" className="h-6 w-6" />
+          <strong>AWAITING VIDEO</strong>
+          <small>STREAM CHANNEL READY</small>
+        </div>
+      )}
+      <div className="feed-label"><span className="live-dot" />{label}</div>
+      <div className="feed-time">{new Date().toISOString().slice(11, 19)} UTC</div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [telemetry, setTelemetry] = useState<Telemetry>(defaults);
+  const [swapped, setSwapped] = useState(false);
+  const [lastPacket, setLastPacket] = useState<number | null>(null);
+  const [triggeredTest, setTriggeredTest] = useState<number | null>(null);
+
+  const { lastJsonMessage, readyState, sendJsonMessage } = useWebSocket("ws://localhost:8765", {
+    shouldReconnect: () => true,
+    reconnectAttempts: Infinity,
+    reconnectInterval: 2000,
+    share: true,
+  });
+
+  useEffect(() => {
+    if (!lastJsonMessage || typeof lastJsonMessage !== "object") return;
+    const incoming = lastJsonMessage as Partial<Telemetry>;
+    setTelemetry((current) => ({
+      ...current,
+      ...incoming,
+      radio: { ...current.radio, ...incoming.radio },
+      battery: { ...current.battery, ...incoming.battery },
+      rover_state: { ...current.rover_state, ...incoming.rover_state },
+      gps: { ...current.gps, ...incoming.gps },
+      velocity: { ...defaults.velocity, ...current.velocity, ...incoming.velocity },
+      imu: { ...current.imu, ...incoming.imu },
+      joy: { ...current.joy, ...incoming.joy },
+      camera: { ...current.camera, ...incoming.camera },
+      motors: Array.isArray(incoming.motors) ? incoming.motors : current.motors,
+    }));
+    setLastPacket(Date.now());
+  }, [lastJsonMessage]);
+
+  const connected = readyState === 1;
+  const battery = telemetry.battery.voltage;
+  const batteryColor = battery > 24 ? "#5bff94" : battery > 22 ? "#ffd45a" : "#ff4d55";
+  const batteryPercent = Math.max(0, Math.min(100, ((battery - 18) / 8) * 100));
+  const pingCritical = telemetry.radio.rx_ping_ms > 500;
+  const deadband = telemetry.joy.deadband ?? 0.08;
+  const inDeadband = Math.abs(telemetry.joy.axis_x) < deadband && Math.abs(telemetry.joy.axis_y) < deadband;
+  const mode = String(telemetry.rover_state.active_flag || "").replace(/_/g, " ");
+  const velocityDirection = telemetry.velocity?.direction_deg ?? telemetry.gps.heading;
+  const velocitySpeed = telemetry.velocity?.speed_mps ?? 0;
+  const cardinalDirections = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  const velocityCardinal = cardinalDirections[Math.round(((velocityDirection % 360) + 360) % 360 / 45) % 8];
+  const streams = useMemo(() => swapped
+    ? { main: telemetry.camera.secondary_url, pip: telemetry.camera.primary_url, mainLabel: "AUX / REAR", pipLabel: "DRIVE CAM 01" }
+    : { main: telemetry.camera.primary_url, pip: telemetry.camera.secondary_url, mainLabel: "DRIVE CAM 01", pipLabel: "AUX / REAR" },
+  [swapped, telemetry.camera]);
+
+  const triggerTest = (id: number) => {
+    sendJsonMessage({ action: "TRIGGER_TEST", test_id: id });
+    setTriggeredTest(id);
+    window.setTimeout(() => setTriggeredTest((current) => current === id ? null : current), 1600);
+  };
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand-block">
+          <div className="brand-mark"><span>R</span></div>
+          <div><h1>ROVER CONTROL</h1><p>GROUND STATION <b>/</b> ALPHA-01</p></div>
+        </div>
+        <div className="status-block">
+          <span className="status-label">WEBSOCKET</span>
+          <strong className={connected ? "ok" : "bad"}><i />{connected ? "CONNECTED" : "RECONNECTING"}</strong>
+          <small>{lastPacket ? `PKT ${Math.max(0, Math.round((Date.now() - lastPacket) / 1000))}s` : "NO DATA"}</small>
+        </div>
+        <div className="status-block">
+          <span className="status-label">XBee TX</span>
+          <strong className={telemetry.radio.tx_active ? "ok" : "bad"}><i />{telemetry.radio.tx_active ? "ACTIVE" : "PORT OFFLINE"}</strong>
+          <small>900 MHz UPLINK</small>
+        </div>
+        <div className={`status-block ${pingCritical ? "ping-critical" : ""}`}>
+          <span className="status-label">XBee RX LATENCY</span>
+          <strong className={pingCritical ? "bad" : telemetry.radio.rx_ping_ms ? "ok" : ""}>{telemetry.radio.rx_ping_ms || "—"} <em>ms</em></strong>
+          <small>WATCHDOG 500ms</small>
+        </div>
+        <div className="battery-block">
+          <div><span className="status-label">MAIN BATTERY</span><strong style={{ color: batteryColor }}>{battery ? battery.toFixed(1) : "—"} <em>V</em></strong></div>
+          <Icon name="battery" />
+          <div className="battery-track"><span style={{ width: `${batteryPercent}%`, background: batteryColor, boxShadow: `0 0 10px ${batteryColor}` }} /></div>
+        </div>
+        <div className="mode-block">
+          <span>OPERATIONAL MODE</span>
+          <strong>{mode}</strong>
+        </div>
+      </header>
+
+      <div className="dashboard-grid">
+        <aside className="left-column">
+          <Panel title="POSITION / GPS" icon="compass" meta={<span className="signal-text"><Icon name="signal" /> RTK FIX</span>} className="map-panel">
+            <MapWidget gps={telemetry.gps} />
+          </Panel>
+          <Panel title="ATTITUDE / IMU" meta="6-AXIS" className="horizon-panel">
+            <Horizon imu={telemetry.imu} />
+          </Panel>
+          <Panel title="MOTOR DIAGNOSTICS" meta="6 CHANNELS" className="motor-panel">
+            <div className="motor-head"><span>MOTOR</span><span>CURRENT</span><span>TEMP</span></div>
+            <div className="motor-list">
+              {telemetry.motors.slice(0, 6).map((motor) => {
+                const hot = motor.temp_c >= 70;
+                return <div className="motor-row" key={motor.name}><span><i className={hot ? "hot" : ""} />{motor.name}</span><strong>{motor.current_a.toFixed(1)} <small>A</small></strong><strong className={hot ? "hot-text" : ""}>{motor.temp_c.toFixed(0)}°<small>C</small></strong></div>;
+              })}
+            </div>
+          </Panel>
+        </aside>
+
+        <section className="center-column">
+          <Panel title="VISUAL FEED" icon="camera" meta={<><span className="record-dot" /> LIVE · 1080P</>} className="camera-panel">
+            <div className="camera-stage">
+              <CameraView url={streams.main} label={streams.mainLabel} />
+              <div className="pip-wrap"><CameraView url={streams.pip} label={streams.pipLabel} secondary /></div>
+              <button className="swap-button" onClick={() => setSwapped((value) => !value)}><Icon name="swap" /> SWAP FEEDS</button>
+              <div className="camera-footer"><span>LINK <b>{connected ? "STABLE" : "OFFLINE"}</b></span><span>30 FPS</span><span>H.264</span><span>12.4 Mbps</span></div>
+            </div>
+          </Panel>
+          <div className="center-readouts">
+            <div className="velocity-readout">
+              <span>VELOCITY</span>
+              <div className="velocity-value">
+                <i style={{ transform: `rotate(${velocityDirection}deg)` }}>↑</i>
+                <strong>{velocitySpeed.toFixed(1)}</strong>
+                <small>m/s</small>
+              </div>
+              <b>{velocityCardinal} · {Math.round(velocityDirection).toString().padStart(3, "0")}°</b>
+            </div>
+            <div><span>HEADING</span><strong>{Math.round(telemetry.gps.heading).toString().padStart(3, "0")}</strong><small>deg</small></div>
+            <div><span>LINK QUALITY</span><strong className={connected ? "green" : "red"}>{connected ? "98" : "00"}</strong><small>%</small></div>
+            <div><span>MISSION TIME</span><strong>01:42:18</strong><small>UTC</small></div>
+          </div>
+        </section>
+
+        <aside className="right-column">
+          <Panel title="JOYSTICK INPUT" icon="crosshair" meta="10–20 HZ" className="joystick-panel">
+            <div className="joystick-body">
+              <div className="joystick-axis y-axis"><span>+Y</span><span>−Y</span></div>
+              <div className="joystick-pad">
+                <div className="deadband-ring" style={{ width: `${deadband * 100}%`, height: `${deadband * 100}%` }} />
+                <div className="joy-dot" style={{
+                  left: `${50 + Math.max(-1, Math.min(1, telemetry.joy.axis_x)) * 43}%`,
+                  top: `${50 - Math.max(-1, Math.min(1, telemetry.joy.axis_y)) * 43}%`,
+                }} />
+              </div>
+              <div className="joystick-axis x-axis"><span>−X</span><span>+X</span></div>
+              <div className="axis-values">
+                <div><span>AXIS X</span><strong>{telemetry.joy.axis_x.toFixed(3)}</strong></div>
+                <div><span>AXIS Y</span><strong>{telemetry.joy.axis_y.toFixed(3)}</strong></div>
+              </div>
+              <div className={`deadband-status ${inDeadband ? "active" : ""}`}><i /> DEADBAND {Math.round(deadband * 100)}% <strong>{inDeadband ? "ACTIVE" : "CLEAR"}</strong></div>
+            </div>
+          </Panel>
+          <Panel title="HARDWARE TESTS" meta="MANUAL OVERRIDE" className="tests-panel">
+            <div className="safety-note"><Icon name="alert" /><p><strong>SAFETY INTERLOCK</strong>Tests lock out joystick input until complete.</p></div>
+            <div className="test-grid">
+              {[
+                [1, "WHEEL", "SWEEP"],
+                [2, "STEERING", "CAL"],
+                [3, "ARM", "TEST"],
+                [4, "BRAKE", "CHECK"],
+                [5, "LIGHTS", "CYCLE"],
+                [6, "RADIO", "PING"],
+              ].map(([id, line1, line2]) => (
+                <button key={id} onClick={() => triggerTest(id as number)} disabled={!connected} className={triggeredTest === id ? "triggered" : ""}>
+                  <span>0{id}</span><strong>{line1}<br />{line2}</strong><i />
+                </button>
+              ))}
+            </div>
+            <div className="command-status"><span>COMMAND CHANNEL</span><strong className={connected ? "online" : ""}><i />{connected ? "ARMED" : "DISABLED"}</strong></div>
+          </Panel>
+        </aside>
+      </div>
+      <footer className="footer-bar">
+        <span><i className={connected ? "online" : ""} /> BACKEND {connected ? "ONLINE" : "OFFLINE"}</span>
+        <span>WS://LOCALHOST:8765</span>
+        <span>BUILD GS-2.4.1</span>
+        <span className="footer-clock">{new Date().toLocaleDateString("en-CA")} / {new Date().toISOString().slice(11, 19)} UTC</span>
+      </footer>
+    </main>
+  );
+}
