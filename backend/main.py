@@ -178,7 +178,8 @@ async def handle_ws_client(websocket):
                     },
                     "radio": {
                         "tx_active": sys_state["tx_active"],
-                        "rx_ping_ms": sys_state["rx_ping_ms"]
+                        "rx_ping_ms": sys_state["rx_ping_ms"],
+                        "port": SERIAL_PORT
                     },
                     "rover_state": {
                         "active_flag": sys_state["cmd_flag"]
