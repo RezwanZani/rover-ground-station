@@ -14,8 +14,6 @@ import JoystickInput from "./components/JoystickInput";
 import HardwareTests from "./components/HardwareTests";
 import FooterBar from "./components/FooterBar";
 
-// Vite 8 currently double-wraps this CommonJS package's default export in
-// development, while production receives the function directly.
 const useWebSocket = typeof useWebSocketExport === "function"
   ? useWebSocketExport
   : (useWebSocketExport as unknown as { default: typeof useWebSocketExport }).default;
@@ -79,42 +77,42 @@ export default function App() {
   };
 
   return (
-    <main className="app-shell">
-      <Topbar telemetry={telemetry} connected={connected} lastPacket={lastPacket} />
+    <main className="grid grid-rows-[74px_minmax(0,1fr)_28px] max-h-[720px]:grid-rows-[66px_minmax(0,1fr)_24px] h-screen p-[8px_10px_0] overflow-hidden bg-[linear-gradient(rgba(78,116,130,.045)_1px,transparent_1px),linear-gradient(90deg,rgba(78,116,130,.045)_1px,transparent_1px),#eaf2f5] bg-[length:28px_28px] text-[#17313b]">
+      <Topbar telemetry={telemetry} connected={connected} lastPacket={lastPacket} setPort={(port) => sendJsonMessage({ action: "SET_PORT", port })} />
 
-      <div className="dashboard-grid relative">
+      <div className="min-h-0 grid grid-cols-[minmax(270px,22%)_minmax(500px,1fr)_minmax(285px,23%)] gap-[8px] py-[8px] relative">
         {!telemetry ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center z-50 rounded-xl" style={{ backgroundColor: 'rgba(10, 14, 20, 0.85)', backdropFilter: 'blur(8px)' }}>
-            <Icon name="alert" className="h-16 w-16 text-[#4a555e] mb-4" />
-            <h2 className="text-2xl font-bold text-[#8a98a1] mb-2 tracking-widest">NO TELEMETRY DATA</h2>
-            <p className="text-[#647179] font-mono">Awaiting first packet from backend on ws://localhost:8765...</p>
+          <div className="absolute inset-0 flex flex-col items-center justify-center z-50 rounded-xl" style={{ backgroundColor: 'rgba(234,242,245,0.85)', backdropFilter: 'blur(8px)' }}>
+            <Icon name="alert" className="h-16 w-16 text-[#69828c] mb-4" />
+            <h2 className="text-2xl font-bold text-[#102b35] mb-2 tracking-widest">NO TELEMETRY DATA</h2>
+            <p className="text-[#69828c] font-mono">Awaiting first packet from backend on ws://localhost:8765...</p>
           </div>
         ) : (
           <>
-            <aside className="left-column">
-              <Panel title="POSITION / GPS" icon="compass" meta={<span className="signal-text"><Icon name="signal" /> RTK FIX</span>} className="map-panel">
+            <aside className="grid gap-[8px] min-w-0 min-h-0 grid-rows-[1.15fr_.9fr_1.15fr]">
+              <Panel title="POSITION / GPS" icon="compass" meta={<span className="flex items-center gap-[4px] text-[#11975a]"><Icon name="signal" className="w-[11px] h-[11px]" /> RTK FIX</span>} className="[&_.panel-header]:!bg-[#eff6f8]">
                 <MapWidget gps={telemetry.gps} />
               </Panel>
-              <Panel title="ATTITUDE / IMU" meta="6-AXIS" className="horizon-panel">
+              <Panel title="ATTITUDE / IMU" meta="6-AXIS">
                 <Horizon imu={telemetry.imu} />
               </Panel>
-              <Panel title="MOTOR DIAGNOSTICS" meta="6 CHANNELS" className="motor-panel">
+              <Panel title="MOTOR DIAGNOSTICS" meta="6 CHANNELS">
                 <MotorDiagnostics motors={telemetry.motors} />
               </Panel>
             </aside>
 
-            <section className="center-column">
-              <Panel title="VISUAL FEED" icon="camera" meta={<><span className="record-dot" /> LIVE · 1080P</>} className="camera-panel">
+            <section className="grid gap-[8px] min-w-0 min-h-0 grid-rows-[minmax(0,1fr)_72px] max-h-[720px]:grid-rows-[minmax(0,1fr)_62px]">
+              <Panel title="VISUAL FEED" icon="camera" meta={<><span className="inline-block w-[6px] h-[6px] rounded-full bg-[#dc3340] shadow-[0_0_6px_#dc3340]" /> LIVE · 1080P</>}>
                 <VisualFeed streams={streams} swapped={swapped} setSwapped={setSwapped} connected={connected} />
               </Panel>
               <CenterReadouts telemetry={telemetry} connected={connected} />
             </section>
 
-            <aside className="right-column">
-              <Panel title="JOYSTICK INPUT" icon="crosshair" meta={<><span className={telemetry.joy.connected ? "green" : "red"}>{telemetry.joy.connected ? "CONNECTED" : "DISCONNECTED"}</span><span style={{ marginLeft: "8px", color: "#586267" }}>{telemetry.joy.connected ? (telemetry.joy.name || "UNKNOWN DEVICE") : "WASD FALLBACK"}</span></>} className="joystick-panel">
+            <aside className="grid gap-[8px] min-w-0 min-h-0 grid-rows-[1.05fr_.95fr]">
+              <Panel title="JOYSTICK INPUT" icon="crosshair" meta={<><span className={telemetry.joy.connected ? "text-[#11975a]" : "text-[#dc3340]"}>{telemetry.joy.connected ? "CONNECTED" : "DISCONNECTED"}</span><span style={{ marginLeft: "8px", color: "#69828c" }}>{telemetry.joy.connected ? (telemetry.joy.name || "UNKNOWN DEVICE") : "WASD FALLBACK"}</span></>}>
                 <JoystickInput joy={telemetry.joy} />
               </Panel>
-              <Panel title="HARDWARE TESTS" meta="MANUAL OVERRIDE" className="tests-panel">
+              <Panel title="HARDWARE TESTS" meta="MANUAL OVERRIDE">
                 <HardwareTests connected={connected} triggeredTest={triggeredTest} triggerTest={triggerTest} />
               </Panel>
             </aside>
