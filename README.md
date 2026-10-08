@@ -66,14 +66,21 @@ This repository implements the ground station subsystem, featuring a native Wind
 
 ### A. RF Link Byte Contract (Laptop $\rightarrow$ Jetson Orin NX)
 
-Transmission occurs at **20 Hz (every 50 ms)** at **115200 baud** using Little-Endian byte ordering (`<cffb`).
+The serial link operates in **XBee API Mode 1** at **115200 baud**, which provides robust packet framing and addressing without the overhead of DDS middleware. 
 
+#### 1. Transmit Request (Base $\rightarrow$ Rover)
+Commands are wrapped in an **API Frame Type `0x10` (Transmit Request)**, bypassing MAC retries for minimal latency (`0x01` transmit options). The core RF payload is a 10-byte struct serialized with Little-Endian ordering (`<cffb`).
+
+**Core Teleop Payload (10 Bytes):**
 | Byte Offset | Field                           | Data Type        | Description                                   |
 | ----------- | ------------------------------- | ---------------- | --------------------------------------------- |
 | `0`       | Header / Sync                   | `char` (1B)    | Frame start identifier: ASCII`$` (`0x24`) |
 | `1 - 4`   | Linear Velocity ($v_x$)       | `float32` (4B) | Normalized drive velocity:`[-1.0, 1.0]`     |
 | `5 - 8`   | Angular Velocity ($\omega_z$) | `float32` (4B) | Normalized yaw rate:`[-1.0, 1.0]`           |
 | `9`       | Command Flag                    | `int8` (1B)    | Operating mode / Hardware test ID             |
+
+#### 2. Receive Packet (Rover $\rightarrow$ Base)
+The base station listens for **API Frame Type `0x90` (Receive Packet)**. It parses the incoming packet for a payload starting with `#` to calculate millisecond-accurate round-trip ping latency.
 
 #### Command Flags (`cmd_flag`)
 

@@ -18,30 +18,31 @@ import serial
 import serial.tools.list_ports
 import pygame
 import websockets
+
 import struct_packer
 from csv_logger import log_event
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
-DEFAULT_SERIAL_PORT = "COM20"   # Change to your XBee COM port (or virtual COM port for testing)
-BAUD_RATE = 115200      # Must match XBee API mode baud rate
-LOOP_HZ = 20            # 20 Hz transmission rate (50ms period)
-DEADZONE = 0.20         # 20% analog stick deadzone to prevent drift spam
-WS_PORT = 8765          # Local WebSocket port for React UI
+DEFAULT_SERIAL_PORT = "COM17"   # Change to your XBee COM port
+BAUD_RATE = 115200      # Must match XBee API mode baud rate[cite: 6]
+LOOP_HZ = 20            # 20 Hz transmission rate (50ms period)[cite: 4]
+DEADZONE = 0.20         # 20% analog stick deadzone to prevent drift spam[cite: 4]
+WS_PORT = 8765          # Local WebSocket port for React UI[cite: 4]
 
 # ==========================================
 # SHARED SYSTEM STATE (Multiplexer)
 # ==========================================
-# This dictionary bridges the physical loop and the WebSocket loop.
+# This dictionary bridges the physical loop and the WebSocket loop[cite: 4].
 sys_state = {
-    "joy_x": 0.0,           # Angular Z
-    "joy_y": 0.0,           # Linear X
-    "tx_active": False,     # Serial write status
-    "rx_ping_ms": 0,        # Heartbeat latency
-    "cmd_flag": 0,          # 0 = Normal Teleop, >0 = Hardware Test Override
+    "joy_x": 0.0,           # Angular Z[cite: 4]
+    "joy_y": 0.0,           # Linear X[cite: 4]
+    "tx_active": False,     # Serial write status[cite: 4]
+    "rx_ping_ms": 0,        # Heartbeat latency[cite: 4]
+    "cmd_flag": 0,          # 0 = Normal Teleop, >0 = Hardware Test Override[cite: 4]
     "test_timeout": 0,      # Timestamp to automatically release the hardware test
-    "joy_connected": False, # Gamepad hardware status
+    "joy_connected": False, # Gamepad hardware status[cite: 4]
     "joy_name": "",         # Gamepad hardware name
     "target_port": DEFAULT_SERIAL_PORT,
     "current_port": None,
@@ -52,7 +53,7 @@ sys_state = {
 # HELPER FUNCTIONS
 # ==========================================
 def apply_deadzone(value):
-    """Zeroes out minor hardware stick drift."""
+    """Zeroes out minor hardware stick drift[cite: 4]."""
     if abs(value) < DEADZONE:
         return 0.0
     return float(value)
@@ -61,7 +62,7 @@ def apply_deadzone(value):
 # ASYNC LOOP 1: HARDWARE & SERIAL ENGINE
 # ==========================================
 async def hardware_loop():
-    """Reads gamepad, multiplexes UI commands, packs bytes, and writes to XBee."""
+    """Reads gamepad, multiplexes UI commands, packs bytes, and writes to XBee[cite: 4]."""
     last_ping_sent_time = 0.0
     ser = None
     last_port_scan = 0
@@ -98,7 +99,7 @@ async def hardware_loop():
             sys_state["available_ports"] = ports
             last_port_scan = loop_start
 
-        # Handle Serial Port Changes
+        # Handle Serial Port Changes from UI
         if sys_state["target_port"] != sys_state["current_port"]:
             if ser:
                 ser.close()
@@ -154,6 +155,7 @@ async def hardware_loop():
         sys_state["joy_x"] = angular_z
         sys_state["joy_y"] = linear_x
 
+        # Multiplex UI Commands
         active_flag = sys_state["cmd_flag"]
         if active_flag > 0:
             linear_x = 0.0
@@ -169,6 +171,7 @@ async def hardware_loop():
                 log_event(f"[MAIN EVENT] Input Reading -> linear_x: {linear_x:.3f}, angular_z: {angular_z:.3f}")
 
             try:
+                # 1. API Mode Transmit framing via struct_packer[cite: 6]
                 payload = struct_packer.pack_command(linear_x, angular_z, active_flag)
                 
                 if ser and ser.is_open:
@@ -176,12 +179,24 @@ async def hardware_loop():
                     ser.write(payload)
                     sys_state["tx_active"] = True
 
-                    if ser.in_waiting >= 2:
-                        ack_data = ser.read(2)
-                        if ack_data[0:1] == b'#':
-                            rtt_ms = (time.perf_counter() - last_ping_sent_time) * 1000.0
-                            sys_state["rx_ping_ms"] = round(rtt_ms, 1)
-                            
+                    # 2. API Mode Receive Parsing (0x90 Frames) for low-latency ping[cite: 6]
+                    while ser.in_waiting > 0:
+                        if ser.read(1) == b'\x7E':
+                            length_data = ser.read(2)
+                            if len(length_data) == 2:
+                                frame_len = int.from_bytes(length_data, 'big')
+                                frame_data = ser.read(frame_len + 1)
+                                
+                                if len(frame_data) == frame_len + 1:
+                                    api_payload = frame_data[:-1] # Strip checksum
+                                    
+                                    # Identify RX Packet (0x90)
+                                    if api_payload and api_payload[0] == 0x90:
+                                        rx_data = api_payload[12:]
+                                        if len(rx_data) > 0 and rx_data[0:1] == b'#':
+                                            rtt_ms = (time.perf_counter() - last_ping_sent_time) * 1000.0
+                                            sys_state["rx_ping_ms"] = round(rtt_ms, 1)
+
                     log_event(f"[MAIN EVENT] Sent Data via Serial -> linear_x: {linear_x:.3f}, angular_z: {angular_z:.3f}, flag: {active_flag}")
                 else:
                     sys_state["tx_active"] = False
@@ -235,6 +250,7 @@ async def handle_ws_client(websocket):
                 telemetry_json = json.dumps(telemetry)
                 is_idle = (sys_state["joy_x"] == 0.0 and sys_state["joy_y"] == 0.0 and sys_state["cmd_flag"] == 0)
                 if not is_idle or not ws_idle_sent:
+                    # Log sparse to prevent flooding the terminal[cite: 4]
                     log_event(f"[MAIN EVENT] Sending Telemetry via WS -> {telemetry_json}")
                     ws_idle_sent = is_idle
                 await websocket.send(telemetry_json)
@@ -275,16 +291,11 @@ async def start_ws_server():
         log_event(f"[WEBSOCKET] Server listening on ws://localhost:{WS_PORT}")
         await asyncio.Future()
 
-
-
 # ==========================================
 # MAIN EXECUTION
 # ==========================================
 async def main():
     log_event("--- ROVER GCS BACKEND INITIALIZING ---")
-    
-    # asyncio.gather runs both the hardware I/O and the network I/O simultaneously 
-    # without them blocking each other on a single thread.
     await asyncio.gather(
         hardware_loop(),
         start_ws_server()
@@ -292,7 +303,6 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # For Python 3.10+, this is the standard way to run the async event loop
         asyncio.run(main())
     except KeyboardInterrupt:
         log_event("\n[SYSTEM] Base Station Shutting Down.")

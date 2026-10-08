@@ -1,7 +1,9 @@
 import serial
 import struct
+import sys
 
-COM_PORT = 'COM21'  # This is the other end of the com0com pair
+# Get COM port from command line args if provided, else default to COM21
+COM_PORT = sys.argv[1] if len(sys.argv) > 1 else 'COM21'
 # Connect to the other end of the com0com pair
 ser = serial.Serial(COM_PORT, 115200)
 print("Listening on " + COM_PORT +"...")
@@ -23,4 +25,4 @@ while True:
                     # Send ACK back so backend can calculate ping
                     ser.write(b'#\x00')
                 except struct.error:
-                    pass
+                    pass
