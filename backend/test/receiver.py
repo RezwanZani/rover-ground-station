@@ -30,14 +30,16 @@ while True:
                     calc_checksum = 0xFF - (sum(api_payload) & 0xFF)
                     if calc_checksum == received_checksum:
                         
-                        # 5. Process RF Receive Packets (0x90)
-                        if api_payload[0] == 0x90:
-                            # Bypass the 12-byte API overhead (Frame Type, MAC, Network Address, Options)
-                            rf_data = api_payload[12:]
+                        # 5. Process RF Receive Packets (0x90) or SIL loopback (0x10)
+                        if api_payload[0] in (0x90, 0x10):
+                            if api_payload[0] == 0x90:
+                                rf_data = api_payload[12:] # Physical XBee RF Rx
+                            else:
+                                rf_data = api_payload[14:] # SIL TCP Bridge (0x10 loopback)
                             
                             # Validate the inner struct matches our contract
-                            if len(rf_data) == 10 and rf_data[0:1] == b'$':
-                                unpacked = struct.unpack('<cffb', rf_data)
+                            if len(rf_data) >= 10 and rf_data[0:1] == b'$':
+                                unpacked = struct.unpack('<cffb', rf_data[:10])
                                 
                                 print(f"Received -> Sync: {unpacked[0]}, Linear X: {unpacked[1]:.2f}, Angular Z: {unpacked[2]:.2f}, Flag: {unpacked[3]}")
                                 

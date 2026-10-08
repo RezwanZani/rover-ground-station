@@ -25,7 +25,8 @@ from csv_logger import log_event
 # ==========================================
 # CONFIGURATION
 # ==========================================
-DEFAULT_SERIAL_PORT = "COM17"   # Change to your XBee COM port
+# Get COM port from command line args if provided, else default to COM21
+DEFAULT_SERIAL_PORT = sys.argv[1] if len(sys.argv) > 1 else 'COM20'
 BAUD_RATE = 115200      # Must match XBee API mode baud rate
 LOOP_HZ = 20            # 20 Hz transmission rate (50ms period)
 DEADZONE = 0.20         # 20% analog stick deadzone to prevent drift spam
@@ -191,9 +192,13 @@ async def hardware_loop():
                                 if len(frame_data) == frame_len + 1:
                                     api_payload = frame_data[:-1] # Strip checksum
                                     
-                                    # Identify RX Packet (0x90)
-                                    if api_payload and api_payload[0] == 0x90:
-                                        rx_data = api_payload[12:]
+                                    # Identify RX Packet (0x90) or SIL Bridge Loopback (0x10)
+                                    if api_payload and api_payload[0] in (0x90, 0x10):
+                                        if api_payload[0] == 0x90:
+                                            rx_data = api_payload[12:] # Physical XBee RF Rx
+                                        else:
+                                            rx_data = api_payload[14:] # SIL TCP Bridge (0x10 loopback)
+
                                         if len(rx_data) > 0 and rx_data[0:1] == b'#':
                                             last_ping_rx_time = time.perf_counter()
                                             rtt_ms = (last_ping_rx_time - last_ping_sent_time) * 1000.0
