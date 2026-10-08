@@ -36,7 +36,7 @@ export default function App() {
     const incoming = lastJsonMessage as Partial<Telemetry>;
     setTelemetry((current) => {
       const base: Telemetry = current || {
-        radio: { tx_active: false, rx_ping_ms: 0 },
+        radio: { tx_active: false, rx_ping_ms: null },
         battery: { voltage: 0 },
         rover_state: { active_flag: "STANDBY" },
         gps: { lat: 0, lon: 0, heading: 0 },

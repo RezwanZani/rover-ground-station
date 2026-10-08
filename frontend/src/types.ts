@@ -5,7 +5,7 @@ export type Motor = {
 };
 
 export type Telemetry = {
-  radio: { tx_active: boolean; rx_ping_ms: number; link_quality?: number; port?: string; available_ports?: string[] };
+  radio: { tx_active: boolean; rx_ping_ms: number | null; link_quality?: number; port?: string; available_ports?: string[] };
   battery: { voltage: number };
   rover_state: { active_flag: string; mission_time?: string };
   gps: { lat: number; lon: number; heading: number };

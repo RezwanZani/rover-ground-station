@@ -24,7 +24,9 @@ export default function CenterReadouts({ telemetry, connected }: { telemetry: Te
       </div>
       <div className="p-[12px_15px] border-r border-[#c5d5dc] bg-[#f8fbfc]">
         <span className="block text-[#69828c] font-mono font-[700] text-[7px] tracking-[.1em]">LINK QUALITY</span>
-        <strong className={`inline-block mt-[8px] font-mono font-[800] text-[17px] leading-[1] ${connected ? "text-[#11975a]" : "text-[#dc3340]"}`}>{connected ? (telemetry.radio.link_quality ?? Math.max(0, 100 - telemetry.radio.rx_ping_ms / 10).toFixed(0)) : "00"}</strong>
+        <strong className={`inline-block mt-[8px] font-mono font-[800] text-[17px] leading-[1] ${connected && telemetry.radio.rx_ping_ms !== null ? "text-[#11975a]" : "text-[#dc3340]"}`}>
+          {connected ? (telemetry.radio.link_quality ?? (telemetry.radio.rx_ping_ms === null ? "00" : Math.max(0, 100 - telemetry.radio.rx_ping_ms / 10).toFixed(0))) : "00"}
+        </strong>
         <small className="ml-[6px] text-[#718a94] font-mono font-[700] text-[7px]">%</small>
       </div>
       <div className="p-[12px_15px] bg-[#f8fbfc]">

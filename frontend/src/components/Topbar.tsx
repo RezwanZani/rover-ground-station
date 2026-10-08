@@ -15,7 +15,8 @@ export default function Topbar({
   const battery = telemetry?.battery?.voltage ?? 0;
   const batteryColor = battery > 24 ? "#11975a" : battery > 22 ? "#ffd45a" : "#dc3340";
   const batteryPercent = Math.max(0, Math.min(100, ((battery - 18) / 8) * 100));
-  const pingCritical = (telemetry?.radio?.rx_ping_ms ?? 0) > 500;
+  const isPingNull = telemetry?.radio?.rx_ping_ms === null || telemetry?.radio?.rx_ping_ms === undefined;
+  const pingCritical = isPingNull || (telemetry?.radio?.rx_ping_ms ?? 0) > 500;
   const mode = String(telemetry?.rover_state?.active_flag || "—").replace(/_/g, " ");
 
   return (
@@ -66,8 +67,8 @@ export default function Topbar({
       </div>
       <div className={`flex flex-col justify-center px-[13px] min-w-0 border-r border-[#c5d5dc] ${pingCritical ? "animate-[alert-pulse_.7s_infinite_alternate]" : ""}`}>
         <span className="font-mono font-[700] text-[8px] leading-[1.1] tracking-[.12em] text-[#69828c]">XBee RX LATENCY</span>
-        <strong className={`mt-[6px] font-mono font-[800] text-[11px] leading-[1] tracking-[.06em] whitespace-nowrap ${pingCritical ? "text-[#dc3340]" : (telemetry?.radio?.rx_ping_ms !== undefined ? "text-[#11975a]" : "")}`}>
-          {telemetry?.radio?.rx_ping_ms ?? "—"} <em className="not-italic text-[9px] text-[#78909a]">ms</em>
+        <strong className={`mt-[6px] font-mono font-[800] text-[11px] leading-[1] tracking-[.06em] whitespace-nowrap ${pingCritical ? "text-[#dc3340]" : "text-[#11975a]"}`}>
+          {isPingNull ? "ERR" : telemetry?.radio?.rx_ping_ms} <em className="not-italic text-[9px] text-[#78909a]">ms</em>
         </strong>
         <small className="mt-[6px] font-mono font-[600] text-[7px] leading-[1] tracking-[.09em] text-[#69828c]">WATCHDOG 500ms</small>
         <style>{`@keyframes alert-pulse { to { background: rgba(220,51,64,.2); } }`}</style>
