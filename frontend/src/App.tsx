@@ -53,6 +53,8 @@ export default function App() {
           rtcm_received: false,
           rtcm_count: 0,
         },
+        cmd_vel: { linear_x: 0, angular_z: 0 },
+        arm: { act1: 0, act2: 0, act3: 0, wrist: 0, gripper: 0 },
       };
       
       return {
@@ -67,6 +69,8 @@ export default function App() {
         joy: { ...base.joy, ...incoming.joy },
         camera: { ...base.camera, ...incoming.camera },
         connection: { ...base.connection, ...incoming.connection },
+        cmd_vel: { ...base.cmd_vel, ...incoming.cmd_vel },
+        arm: { ...base.arm, ...incoming.arm },
         motors: Array.isArray(incoming.motors) ? incoming.motors : base.motors,
       };
     });
@@ -132,8 +136,8 @@ export default function App() {
             </section>
 
             <aside className="grid gap-[8px] min-w-0 min-h-0 grid-rows-[1.05fr_.95fr]">
-              <Panel title="JOYSTICK INPUT" icon="crosshair" meta={<><span className={telemetry.joy.connected ? "text-[#11975a]" : "text-[#dc3340]"}>{telemetry.joy.connected ? "CONNECTED" : "DISCONNECTED"}</span><span style={{ marginLeft: "8px", color: "#69828c" }}>{telemetry.joy.connected ? (telemetry.joy.name || "UNKNOWN DEVICE") : "WASD FALLBACK"}</span></>}>
-                <JoystickInput joy={telemetry.joy} />
+              <Panel title="JOYSTICK & ARM CONTROL" icon="crosshair" meta={<><span className={telemetry.joy.connected ? "text-[#11975a]" : "text-[#dc3340]"}>{telemetry.joy.connected ? "CONNECTED" : "DISCONNECTED"}</span><span style={{ marginLeft: "8px", color: "#69828c" }}>{telemetry.joy.connected ? (telemetry.joy.name || "UNKNOWN DEVICE") : "WASD FALLBACK"}</span></>}>
+                <JoystickInput joy={telemetry.joy} cmdVel={telemetry.cmd_vel} arm={telemetry.arm} />
               </Panel>
               <Panel title="HARDWARE TESTS" meta="MANUAL OVERRIDE">
                 <HardwareTests connected={connected} triggeredTest={triggeredTest} triggerTest={triggerTest} />

@@ -60,6 +60,8 @@ sys_state = {
     "rover_state": {"active_flag": "NORMAL_TELEOP", "mission_time": "00:00:00"},
     "gps": {"lat": 23.8103, "lon": 90.4125, "heading": 0.0},
     "velocity": {"speed_mps": 0.0, "direction_deg": 0.0},
+    "cmd_vel": {"linear_x": 0.0, "angular_z": 0.0},
+    "arm": {"act1": 0.0, "act2": 0.0, "act3": 0.0, "wrist": 0.0, "gripper": 0.0},
     "imu": {"pitch": 0.0, "roll": 0.0, "yaw": 0.0},
     "motors": [
         {"name": "FRONT LEFT", "current_a": 1.2, "temp_c": 36.0},
@@ -114,6 +116,27 @@ def process_incoming_telemetry(raw_data, is_xbee_hint=False):
                     return
                 except Exception:
                     return
+            elif raw_data.startswith(b'M') and len(raw_data) == 16:
+                # Direct 16-byte MOTION Packet from Base Master or Teleop!
+                try:
+                    _, seq, vx, wz, a1, a2, a3, wr, gr = struct.unpack('<cBhhhhhhh', raw_data)
+                    sys_state["cmd_vel"] = {
+                        "linear_x": round(vx / 1000.0, 3),
+                        "angular_z": round(wz / 1000.0, 3)
+                    }
+                    sys_state["arm"] = {
+                        "act1": round(a1 / 1000.0, 1),
+                        "act2": round(a2 / 1000.0, 1),
+                        "act3": round(a3 / 1000.0, 1),
+                        "wrist": round(wr / 1000.0, 1),
+                        "gripper": round(gr / 1000.0, 1)
+                    }
+                    sys_state["joy_x"] = round(wz / 1000.0, 3)
+                    sys_state["joy_y"] = round(vx / 1000.0, 3)
+                    sys_state["joy_connected"] = True
+                    return
+                except Exception:
+                    return
             text = raw_data.decode('utf-8', errors='ignore').strip()
         else:
             text = str(raw_data).strip()
@@ -146,6 +169,12 @@ def process_incoming_telemetry(raw_data, is_xbee_hint=False):
 
         if "velocity" in data and isinstance(data["velocity"], dict):
             sys_state["velocity"] = data["velocity"]
+
+        if "cmd_vel" in data and isinstance(data["cmd_vel"], dict):
+            sys_state["cmd_vel"] = data["cmd_vel"]
+
+        if "arm" in data and isinstance(data["arm"], dict):
+            sys_state["arm"] = data["arm"]
 
         if "imu" in data and isinstance(data["imu"], dict):
             sys_state["imu"] = data["imu"]
@@ -390,6 +419,17 @@ async def handle_ws_client(websocket):
                     "battery": sys_state["battery"],
                     "gps": sys_state["gps"],
                     "velocity": sys_state["velocity"],
+                    "cmd_vel": sys_state.get("cmd_vel", {
+                        "linear_x": round(sys_state["joy_y"], 3),
+                        "angular_z": round(sys_state["joy_x"], 3),
+                    }),
+                    "arm": sys_state.get("arm", {
+                        "act1": 0.0,
+                        "act2": 0.0,
+                        "act3": 0.0,
+                        "wrist": 0.0,
+                        "gripper": 0.0,
+                    }),
                     "imu": sys_state["imu"],
                     "motors": sys_state["motors"],
                     "connection": conn_status,

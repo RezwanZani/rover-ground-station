@@ -19,6 +19,19 @@ export type ConnectionStatus = {
   master_port?: string;
 };
 
+export type ArmState = {
+  act1: number;
+  act2: number;
+  act3: number;
+  wrist: number;
+  gripper: number;
+};
+
+export type CmdVel = {
+  linear_x: number;
+  angular_z: number;
+};
+
 export type Telemetry = {
   radio: { tx_active: boolean; rx_ping_ms: number | null; link_quality?: number; port?: string; available_ports?: string[] };
   battery: { voltage: number };
@@ -30,4 +43,6 @@ export type Telemetry = {
   motors: Motor[];
   camera: { primary_url?: string; secondary_url?: string };
   connection?: ConnectionStatus;
+  cmd_vel?: CmdVel;
+  arm?: ArmState;
 };
