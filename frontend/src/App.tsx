@@ -7,7 +7,7 @@ import Panel from "./components/Panel";
 import MapWidget from "./components/MapWidget";
 import Horizon from "./components/Horizon";
 import Topbar from "./components/Topbar";
-import MotorDiagnostics from "./components/MotorDiagnostics";
+import ConnectionDiagnostics from "./components/ConnectionDiagnostics";
 import VisualFeed from "./components/VisualFeed";
 import CenterReadouts from "./components/CenterReadouts";
 import JoystickInput from "./components/JoystickInput";
@@ -45,6 +45,14 @@ export default function App() {
         joy: { axis_x: 0, axis_y: 0, deadband: 0.08 },
         motors: [],
         camera: {},
+        connection: {
+          active_channel: "OFFLINE",
+          xbee_connected: false,
+          gps_connected: false,
+          gps_fix: "NO FIX",
+          rtcm_received: false,
+          rtcm_count: 0,
+        },
       };
       
       return {
@@ -58,6 +66,7 @@ export default function App() {
         imu: { ...base.imu, ...incoming.imu },
         joy: { ...base.joy, ...incoming.joy },
         camera: { ...base.camera, ...incoming.camera },
+        connection: { ...base.connection, ...incoming.connection },
         motors: Array.isArray(incoming.motors) ? incoming.motors : base.motors,
       };
     });
@@ -96,8 +105,22 @@ export default function App() {
               <Panel title="ATTITUDE / IMU" meta="6-AXIS">
                 <Horizon imu={telemetry.imu} />
               </Panel>
-              <Panel title="MOTOR DIAGNOSTICS" meta="6 CHANNELS">
-                <MotorDiagnostics motors={telemetry.motors} />
+              <Panel
+                title="ROVER CONNECTIONS"
+                icon="signal"
+                meta={
+                  <span className={`text-[8px] font-mono font-bold uppercase ${
+                    telemetry.connection?.active_channel === "DUAL_ACTIVE" ? "text-[#11975a]" :
+                    telemetry.connection?.active_channel === "UDP" ? "text-[#2980b9]" :
+                    telemetry.connection?.active_channel === "XBEE" ? "text-[#f39c12]" : "text-[#dc3340]"
+                  }`}>
+                    {telemetry.connection?.active_channel === "DUAL_ACTIVE" ? "DUAL (Wi-Fi+RF)" :
+                     telemetry.connection?.active_channel === "UDP" ? "Wi-Fi (UDP)" :
+                     telemetry.connection?.active_channel === "XBEE" ? "900MHz (RF)" : "OFFLINE"}
+                  </span>
+                }
+              >
+                <ConnectionDiagnostics connection={telemetry.connection} />
               </Panel>
             </aside>
 

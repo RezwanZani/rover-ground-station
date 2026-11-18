@@ -3,12 +3,9 @@ struct_packer.py
 Handles the high-efficiency binary serialization and API Mode 1 framing for the RF radio link.
 """
 import struct
-
-# ==========================================
-# PACKET CONTRACT DEFINITION
-# ==========================================
-PAYLOAD_FORMAT = '<cffb'
-SYNC_CHAR = b'$'
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), '..', '..'))
+from comms_config import GUI_PAYLOAD_FORMAT as PAYLOAD_FORMAT, GUI_SYNC_CHAR as SYNC_CHAR
 
 def pack_command(linear_x: float, angular_z: float, cmd_flag: int = 0) -> bytes:
     """

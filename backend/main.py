@@ -11,6 +11,7 @@ Usage:
 
 import asyncio
 import json
+import socket
 import struct
 import time
 import sys
@@ -25,17 +26,23 @@ from csv_logger import log_event
 # ==========================================
 # CONFIGURATION
 # ==========================================
-# Get COM port from command line args if provided, else default to COM21
-DEFAULT_SERIAL_PORT = sys.argv[1] if len(sys.argv) > 1 else 'COM20'
-BAUD_RATE = 115200      # Must match XBee API mode baud rate
-LOOP_HZ = 20            # 20 Hz transmission rate (50ms period)
-DEADZONE = 0.20         # 20% analog stick deadzone to prevent drift spam
-WS_PORT = 8765          # Local WebSocket port for React UI
+import os as _os
+sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), '..', '..'))
+from comms_config import (
+    GUI_XBEE_PORT, XBEE_BAUD_RATE, GUI_LOOP_HZ, GUI_DEADZONE, WS_PORT,
+    UDP_STATUS_PORT, UDP_LISTEN_IP,
+)
+# Get COM port from command line args if provided, else default from comms_config
+DEFAULT_SERIAL_PORT = sys.argv[1] if len(sys.argv) > 1 else GUI_XBEE_PORT
+BAUD_RATE = XBEE_BAUD_RATE     # Must match XBee API mode baud rate
+LOOP_HZ   = GUI_LOOP_HZ        # 20 Hz transmission rate (50ms period)
+DEADZONE  = GUI_DEADZONE        # Analog stick deadzone to prevent drift spam
+# WS_PORT already imported from comms_config (WebSocket port for React UI)
 
 # ==========================================
 # SHARED SYSTEM STATE (Multiplexer)
 # ==========================================
-# This dictionary bridges the physical loop and the WebSocket loop.
+# This dictionary bridges the physical loop, the UDP loop, and the WebSocket loop.
 sys_state = {
     "joy_x": 0.0,           # Angular Z
     "joy_y": 0.0,           # Linear X
@@ -47,7 +54,37 @@ sys_state = {
     "joy_name": "",         # Gamepad hardware name
     "target_port": DEFAULT_SERIAL_PORT,
     "current_port": None,
-    "available_ports": []
+    "available_ports": [],
+    # Live Rover Telemetry (nominal realistic defaults)
+    "battery": {"voltage": 24.2},
+    "rover_state": {"active_flag": "NORMAL_TELEOP", "mission_time": "00:00:00"},
+    "gps": {"lat": 23.8103, "lon": 90.4125, "heading": 0.0},
+    "velocity": {"speed_mps": 0.0, "direction_deg": 0.0},
+    "imu": {"pitch": 0.0, "roll": 0.0, "yaw": 0.0},
+    "motors": [
+        {"name": "FRONT LEFT", "current_a": 1.2, "temp_c": 36.0},
+        {"name": "FRONT RIGHT", "current_a": 1.3, "temp_c": 36.5},
+        {"name": "MID LEFT", "current_a": 1.1, "temp_c": 35.8},
+        {"name": "MID RIGHT", "current_a": 1.2, "temp_c": 36.1},
+        {"name": "REAR LEFT", "current_a": 1.4, "temp_c": 37.0},
+        {"name": "REAR RIGHT", "current_a": 1.3, "temp_c": 36.8},
+    ],
+    "last_telemetry_rx": 0.0,
+    "connection": {
+        "active_channel": "OFFLINE",
+        "last_channel": "NONE",
+        "xbee_connected": False,
+        "xbee_port": "XBee 900MHz",
+        "xbee_rx_pkts": 0,
+        "gps_connected": False,
+        "gps_fix": "NO FIX",
+        "rtcm_received": False,
+        "rtcm_count": 0,
+        "rtcm_age_s": None,
+    },
+    "last_xbee_rx": 0.0,
+    "last_udp_rx": 0.0,
+    "last_channel": "NONE",
 }
 
 # ==========================================
@@ -58,6 +95,74 @@ def apply_deadzone(value):
     if abs(value) < DEADZONE:
         return 0.0
     return float(value)
+
+
+def process_incoming_telemetry(raw_data, is_xbee_hint=False):
+    """Processes incoming telemetry bytes from UDP or XBee RF link."""
+    try:
+        is_xbee = is_xbee_hint
+        if isinstance(raw_data, bytes):
+            if raw_data.startswith(b'T'):
+                raw_data = raw_data[1:]
+                is_xbee = True
+            elif raw_data.startswith(b'H'):
+                # Base Master Heartbeat!
+                try:
+                    hb = json.loads(raw_data[1:].decode('utf-8'))
+                    sys_state["connection"]["xbee_connected"] = hb.get("connected", False)
+                    sys_state["connection"]["xbee_port"] = hb.get("port", "XBee 900MHz")
+                    return
+                except Exception:
+                    return
+            text = raw_data.decode('utf-8', errors='ignore').strip()
+        else:
+            text = str(raw_data).strip()
+
+        if not text or not (text.startswith('{') and text.endswith('}')):
+            return
+
+        data = json.loads(text)
+        now = time.time()
+        sys_state["last_telemetry_rx"] = now
+        if is_xbee:
+            sys_state["last_xbee_rx"] = now
+            sys_state["last_channel"] = "XBEE"
+        else:
+            sys_state["last_udp_rx"] = now
+            sys_state["last_channel"] = "UDP"
+
+        # Update ping / latency if timestamp present
+        if "timestamp" in data:
+            dt = (now - data["timestamp"]) * 1000.0
+            if 0 <= dt < 5000:
+                sys_state["rx_ping_ms"] = round(dt, 1)
+
+        # Merge telemetry fields
+        if "battery" in data and isinstance(data["battery"], dict):
+            sys_state["battery"] = data["battery"]
+
+        if "gps" in data and isinstance(data["gps"], dict):
+            sys_state["gps"] = data["gps"]
+
+        if "velocity" in data and isinstance(data["velocity"], dict):
+            sys_state["velocity"] = data["velocity"]
+
+        if "imu" in data and isinstance(data["imu"], dict):
+            sys_state["imu"] = data["imu"]
+
+        if "motors" in data and isinstance(data["motors"], list):
+            sys_state["motors"] = data["motors"]
+
+        if "connection" in data and isinstance(data["connection"], dict):
+            sys_state["connection"].update(data["connection"])
+
+        if "rover_state" in data and isinstance(data["rover_state"], dict):
+            if sys_state["cmd_flag"] == 0:
+                sys_state["rover_state"]["active_flag"] = data["rover_state"].get("active_flag", "NORMAL_TELEOP")
+            sys_state["rover_state"]["mission_time"] = data["rover_state"].get("mission_time", "00:00:00")
+
+    except Exception:
+        pass
 
 # ==========================================
 # ASYNC LOOP 1: HARDWARE & SERIAL ENGINE
@@ -199,6 +304,10 @@ async def hardware_loop():
                                         else:
                                             rx_data = api_payload[14:] # SIL TCP Bridge (0x10 loopback)
 
+                                        # Identify Telemetry packet (prefixed with 'T' or '{')
+                                        if len(rx_data) > 0 and (rx_data[0:1] == b'T' or rx_data[0:1] == b'{'):
+                                            process_incoming_telemetry(rx_data)
+
                                         if len(rx_data) > 0 and rx_data[0:1] == b'#':
                                             last_ping_rx_time = time.perf_counter()
                                             rtt_ms = (last_ping_rx_time - last_ping_sent_time) * 1000.0
@@ -238,30 +347,59 @@ async def handle_ws_client(websocket):
         ws_idle_sent = False
         while True:
             try:
+                now = time.time()
+                tel_age = now - sys_state.get("last_telemetry_rx", 0)
+                link_qual = 100 if tel_age < 1.5 else max(0, int(100 - (tel_age - 1.5) * 20))
+
+                xbee_alive = (now - sys_state.get("last_xbee_rx", 0)) < 3.0
+                udp_alive = (now - sys_state.get("last_udp_rx", 0)) < 3.0
+
+                if xbee_alive and udp_alive:
+                    current_chan = "DUAL_ACTIVE"
+                elif udp_alive:
+                    current_chan = "UDP"
+                elif xbee_alive:
+                    current_chan = "XBEE"
+                else:
+                    current_chan = "OFFLINE"
+
+                conn_status = dict(sys_state.get("connection", {}))
+                conn_status["active_channel"] = current_chan
+                conn_status["last_channel"] = sys_state.get("last_channel", "NONE")
+
                 telemetry = {
-                    "timestamp": time.time(),
+                    "timestamp": now,
                     "joy": {
                         "axis_x": sys_state["joy_x"],
                         "axis_y": sys_state["joy_y"],
                         "connected": sys_state["joy_connected"],
-                        "name": sys_state["joy_name"]
+                        "name": sys_state["joy_name"],
+                        "deadband": DEADZONE
                     },
                     "radio": {
                         "tx_active": sys_state["tx_active"],
                         "rx_ping_ms": sys_state["rx_ping_ms"],
                         "port": sys_state["current_port"],
-                        "available_ports": sys_state["available_ports"]
+                        "available_ports": sys_state["available_ports"],
+                        "link_quality": link_qual
                     },
                     "rover_state": {
-                        "active_flag": sys_state["cmd_flag"]
-                    }
+                        "active_flag": "TEST_MODE" if sys_state["cmd_flag"] > 0 else sys_state["rover_state"].get("active_flag", "NORMAL_TELEOP"),
+                        "mission_time": sys_state["rover_state"].get("mission_time", "00:00:00")
+                    },
+                    "battery": sys_state["battery"],
+                    "gps": sys_state["gps"],
+                    "velocity": sys_state["velocity"],
+                    "imu": sys_state["imu"],
+                    "motors": sys_state["motors"],
+                    "connection": conn_status,
                 }
                 
                 telemetry_json = json.dumps(telemetry)
-                is_idle = (sys_state["joy_x"] == 0.0 and sys_state["joy_y"] == 0.0 and sys_state["cmd_flag"] == 0)
+                is_idle = (sys_state["joy_x"] == 0.0 and sys_state["joy_y"] == 0.0 and sys_state["cmd_flag"] == 0 and tel_age > 1.0)
                 if not is_idle or not ws_idle_sent:
                     # Log sparse to prevent flooding the terminal
-                    log_event(f"[MAIN EVENT] Sending Telemetry via WS -> {telemetry_json}")
+                    log_event(f"[MAIN EVENT] Live Telemetry -> Bat:{sys_state['battery']['voltage']}V | Lat:{sys_state['gps']['lat']:.4f} | Roll:{sys_state['imu']['roll']:.1f}° | Speed:{sys_state['velocity']['speed_mps']:.1f}m/s")
                     ws_idle_sent = is_idle
                 await websocket.send(telemetry_json)
                 
@@ -296,6 +434,34 @@ async def handle_ws_client(websocket):
     )
     log_event("[WEBSOCKET] React UI Disconnected.")
 
+# ==========================================
+# ASYNC LOOP 3: NETWORK UDP TELEMETRY RECEIVER
+# ==========================================
+async def telemetry_udp_loop():
+    """Listens for UDP telemetry packets from the Rover over network."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind((UDP_LISTEN_IP, UDP_STATUS_PORT))
+        sock.setblocking(False)
+        log_event(f"[UDP TELEMETRY] Listening for Rover Telemetry on {UDP_LISTEN_IP}:{UDP_STATUS_PORT}")
+    except Exception as e:
+        log_event(f"[UDP ERROR] Could not bind UDP telemetry socket on {UDP_STATUS_PORT}: {e}")
+        return
+
+    while True:
+        try:
+            while True:
+                try:
+                    data, addr = sock.recvfrom(4096)
+                    if data:
+                        process_incoming_telemetry(data)
+                except (BlockingIOError, InterruptedError):
+                    break
+        except Exception:
+            pass
+        await asyncio.sleep(0.02)  # 50 Hz poll
+
 async def start_ws_server():
     async with websockets.serve(handle_ws_client, "localhost", WS_PORT):
         log_event(f"[WEBSOCKET] Server listening on ws://localhost:{WS_PORT}")
@@ -308,7 +474,8 @@ async def main():
     log_event("--- ROVER GCS BACKEND INITIALIZING ---")
     await asyncio.gather(
         hardware_loop(),
-        start_ws_server()
+        start_ws_server(),
+        telemetry_udp_loop()
     )
 
 if __name__ == "__main__":
