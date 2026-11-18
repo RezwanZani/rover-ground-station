@@ -36,7 +36,13 @@ export default function App() {
     const incoming = lastJsonMessage as Partial<Telemetry>;
     setTelemetry((current) => {
       const base: Telemetry = current || {
-        radio: { tx_active: false, rx_ping_ms: null },
+        radio: { 
+          tx_active: false, 
+          rx_ping_ms: null, 
+          baud: 115200, 
+          available_ports: [], 
+          available_bauds: [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600] 
+        },
         battery: { voltage: 0 },
         rover_state: { active_flag: "STANDBY" },
         gps: { lat: 0, lon: 0, heading: 0 },
@@ -91,7 +97,13 @@ export default function App() {
 
   return (
     <main className="grid grid-rows-[74px_minmax(0,1fr)_28px] max-h-[720px]:grid-rows-[66px_minmax(0,1fr)_24px] h-screen p-[8px_10px_0] overflow-hidden bg-[linear-gradient(rgba(78,116,130,.045)_1px,transparent_1px),linear-gradient(90deg,rgba(78,116,130,.045)_1px,transparent_1px),#eaf2f5] bg-[length:28px_28px] text-[#17313b]">
-      <Topbar telemetry={telemetry} connected={connected} lastPacket={lastPacket} setPort={(port) => sendJsonMessage({ action: "SET_PORT", port })} />
+      <Topbar 
+        telemetry={telemetry} 
+        connected={connected} 
+        lastPacket={lastPacket} 
+        setPort={(port) => sendJsonMessage({ action: "SET_PORT", port })} 
+        setBaud={(baud) => sendJsonMessage({ action: "SET_BAUD", baud })}
+      />
 
       <div className="min-h-0 grid grid-cols-[minmax(270px,22%)_minmax(500px,1fr)_minmax(285px,23%)] gap-[8px] py-[8px] relative">
         {!telemetry ? (

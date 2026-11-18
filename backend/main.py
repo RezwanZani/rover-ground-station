@@ -30,10 +30,14 @@ import os as _os
 sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), '..', '..'))
 from comms_config import (
     GUI_XBEE_PORT, XBEE_BAUD_RATE, GUI_LOOP_HZ, GUI_DEADZONE, WS_PORT,
-    UDP_STATUS_PORT, UDP_LISTEN_IP,
+    UDP_STATUS_PORT, UDP_LISTEN_IP, UDP_JOY_PORT, MASTER_IP,
+    scan_available_ports, AVAILABLE_BAUD_RATES,
 )
-# Get COM port from command line args if provided, else default from comms_config
-DEFAULT_SERIAL_PORT = sys.argv[1] if len(sys.argv) > 1 else GUI_XBEE_PORT
+# Get COM port from command line args if provided, else scan available ports
+initial_detected_ports = scan_available_ports()
+DEFAULT_SERIAL_PORT = sys.argv[1] if len(sys.argv) > 1 else (
+    initial_detected_ports[0] if initial_detected_ports else GUI_XBEE_PORT
+)
 BAUD_RATE = XBEE_BAUD_RATE     # Must match XBee API mode baud rate
 LOOP_HZ   = GUI_LOOP_HZ        # 20 Hz transmission rate (50ms period)
 DEADZONE  = GUI_DEADZONE        # Analog stick deadzone to prevent drift spam
@@ -54,7 +58,12 @@ sys_state = {
     "joy_name": "",         # Gamepad hardware name
     "target_port": DEFAULT_SERIAL_PORT,
     "current_port": None,
-    "available_ports": [],
+    "target_baud": BAUD_RATE,
+    "current_baud": BAUD_RATE,
+    "available_ports": initial_detected_ports,
+    "available_bauds": AVAILABLE_BAUD_RATES,
+    "master_active": False,
+    "last_master_hb": 0.0,
     # Live Rover Telemetry (nominal realistic defaults)
     "battery": {"voltage": 24.2},
     "rover_state": {"active_flag": "NORMAL_TELEOP", "mission_time": "00:00:00"},
@@ -111,8 +120,17 @@ def process_incoming_telemetry(raw_data, is_xbee_hint=False):
                 # Base Master Heartbeat!
                 try:
                     hb = json.loads(raw_data[1:].decode('utf-8'))
-                    sys_state["connection"]["xbee_connected"] = hb.get("connected", False)
-                    sys_state["connection"]["xbee_port"] = hb.get("port", "XBee 900MHz")
+                    hb_port = hb.get("port", "XBee 900MHz")
+                    hb_baud = hb.get("baud", sys_state.get("target_baud", BAUD_RATE))
+                    hb_connected = hb.get("connected", False)
+                    sys_state["connection"]["xbee_connected"] = hb_connected
+                    sys_state["connection"]["xbee_port"] = hb_port
+                    sys_state["connection"]["xbee_baud"] = hb_baud
+                    sys_state["current_port"] = hb_port
+                    sys_state["current_baud"] = hb_baud
+                    sys_state["tx_active"] = hb_connected
+                    sys_state["master_active"] = True
+                    sys_state["last_master_hb"] = time.time()
                     return
                 except Exception:
                     return
@@ -215,40 +233,38 @@ async def hardware_loop():
         
         # Periodic Port Scanning
         if loop_start - last_port_scan > 2.0:
-            ports = [p.device for p in serial.tools.list_ports.comports()]
-            if sys.platform == 'win32':
-                import winreg
-                try:
-                    key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DEVICEMAP\SERIALCOMM")
-                    for i in range(256):
-                        try:
-                            val = winreg.EnumValue(key, i)
-                            port_name = str(val[1])
-                            if port_name not in ports:
-                                ports.append(port_name)
-                        except OSError:
-                            break
-                    winreg.CloseKey(key)
-                except OSError:
-                    pass
-            
-            sys_state["available_ports"] = ports
+            sys_state["available_ports"] = scan_available_ports()
             last_port_scan = loop_start
 
-        # Handle Serial Port Changes from UI
-        if sys_state["target_port"] != sys_state["current_port"]:
-            if ser:
-                ser.close()
-                ser = None
-            new_port = sys_state["target_port"]
-            if new_port:
-                try:
-                    ser = serial.Serial(new_port, BAUD_RATE, timeout=0.01)
-                    log_event(f"[SERIAL] Connected to XBee on {new_port} at {BAUD_RATE} baud.")
-                except serial.SerialException as e:
-                    log_event(f"[SERIAL ERROR] Could not open {new_port}. Running in dry-run mode without radio.")
+        # Handle Serial Port and Baud Changes in Standalone Mode
+        is_master_active = (time.time() - sys_state.get("last_master_hb", 0)) < 3.0
+        if not is_master_active:
+            target_p = sys_state["target_port"]
+            target_b = sys_state.get("target_baud", BAUD_RATE)
+            curr_p = sys_state["current_port"]
+            curr_b = sys_state.get("current_baud", BAUD_RATE)
+
+            if target_p != curr_p or target_b != curr_b:
+                if ser:
+                    ser.close()
                     ser = None
-            sys_state["current_port"] = new_port
+                if target_p:
+                    try:
+                        ser = serial.Serial(target_p, target_b, timeout=0.01)
+                        log_event(f"[SERIAL] Connected to XBee on {target_p} at {target_b} baud.")
+                    except serial.SerialException as e:
+                        log_event(f"[SERIAL ERROR] Could not open {target_p} at {target_b} baud. Running in dry-run mode without radio.")
+                        ser = None
+                sys_state["current_port"] = target_p
+                sys_state["current_baud"] = target_b
+        else:
+            # BaseMaster hub is managing radio: close local port if open to avoid locking conflicts
+            if ser:
+                try:
+                    ser.close()
+                except Exception:
+                    pass
+                ser = None
 
         # --- A. Read Inputs ---
         for event in pygame.event.get():
@@ -408,8 +424,10 @@ async def handle_ws_client(websocket):
                     "radio": {
                         "tx_active": sys_state["tx_active"],
                         "rx_ping_ms": sys_state["rx_ping_ms"],
-                        "port": sys_state["current_port"],
-                        "available_ports": sys_state["available_ports"],
+                        "port": sys_state.get("current_port") or sys_state.get("target_port"),
+                        "baud": sys_state.get("current_baud") or sys_state.get("target_baud", BAUD_RATE),
+                        "available_ports": sys_state.get("available_ports", []),
+                        "available_bauds": sys_state.get("available_bauds", AVAILABLE_BAUD_RATES),
                         "link_quality": link_qual
                     },
                     "rover_state": {
@@ -464,6 +482,45 @@ async def handle_ws_client(websocket):
                     if port:
                         sys_state["target_port"] = port
                         log_event(f"[UI COMMAND] Port change requested to {port}.")
+                        # Notify BaseMaster hub if active
+                        try:
+                            ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            ctrl_pkt = b'K' + json.dumps({"action": "SET_PORT", "port": port}).encode('utf-8')
+                            ctrl_sock.sendto(ctrl_pkt, (MASTER_IP, UDP_JOY_PORT))
+                            ctrl_sock.close()
+                        except Exception:
+                            pass
+                elif data.get("action") == "SET_BAUD":
+                    try:
+                        baud = int(data.get("baud", 115200))
+                        sys_state["target_baud"] = baud
+                        log_event(f"[UI COMMAND] Baud rate change requested to {baud}.")
+                        # Notify BaseMaster hub if active
+                        try:
+                            ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            ctrl_pkt = b'K' + json.dumps({"action": "SET_BAUD", "baud": baud}).encode('utf-8')
+                            ctrl_sock.sendto(ctrl_pkt, (MASTER_IP, UDP_JOY_PORT))
+                            ctrl_sock.close()
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        log_event(f"[UI COMMAND ERROR] Invalid baud rate: {e}")
+                elif data.get("action") == "SET_CONFIG":
+                    try:
+                        port = data.get("port")
+                        baud = data.get("baud")
+                        if port: sys_state["target_port"] = port
+                        if baud: sys_state["target_baud"] = int(baud)
+                        log_event(f"[UI COMMAND] Radio config change requested: Port={port}, Baud={baud}.")
+                        try:
+                            ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                            ctrl_pkt = b'K' + json.dumps({"action": "SET_CONFIG", "port": port, "baud": baud}).encode('utf-8')
+                            ctrl_sock.sendto(ctrl_pkt, (MASTER_IP, UDP_JOY_PORT))
+                            ctrl_sock.close()
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        log_event(f"[UI COMMAND ERROR] Setting config failed: {e}")
                     
         except websockets.exceptions.ConnectionClosed as e:
             log_event(f"[MAIN EVENT FAILURE] WS Receive Error / Connection Closed -> {e}")

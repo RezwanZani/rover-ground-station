@@ -33,7 +33,15 @@ export type CmdVel = {
 };
 
 export type Telemetry = {
-  radio: { tx_active: boolean; rx_ping_ms: number | null; link_quality?: number; port?: string; available_ports?: string[] };
+  radio: {
+    tx_active: boolean;
+    rx_ping_ms: number | null;
+    link_quality?: number;
+    port?: string;
+    baud?: number;
+    available_ports?: string[];
+    available_bauds?: number[];
+  };
   battery: { voltage: number };
   rover_state: { active_flag: string; mission_time?: string };
   gps: { lat: number; lon: number; heading: number };
